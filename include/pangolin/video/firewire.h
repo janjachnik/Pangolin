@@ -74,6 +74,49 @@ struct PANGOLIN_EXPORT Guid
     uint64_t guid;
 };
 
+struct MetaData {
+    uint32_t flags;
+    unsigned int brightness;
+    unsigned int auto_exposure;
+    unsigned int whitebalance_u_b, whitebalance_v_r;
+    uint32_t timestamp, frame_count;
+    uint32_t shutterQuant, gain;
+    float shutterAbs;
+
+    //TODO: Add strobe, GPIO and ROI functionality if needed.
+    uint32_t strobe, gpio, roi;
+
+    void copy_from( MetaData *in ) {
+        flags=in->flags;
+        brightness=in->brightness;
+        auto_exposure=in->auto_exposure;
+        whitebalance_u_b=in->whitebalance_u_b;
+        whitebalance_v_r=in->whitebalance_v_r;
+        timestamp=in->timestamp;
+        frame_count=in->frame_count;
+        shutterQuant=in->shutterQuant;
+        gain=in->gain;
+        shutterAbs=in->shutterAbs;
+        strobe = in->strobe;
+        gpio=in->gpio;
+        roi=in->roi;
+    }
+};
+
+typedef enum {
+    META_TIMESTAMP = 1,
+    META_GAIN = 2,
+    META_SHUTTER = 4,
+    META_BRIGHTNESS = 8,
+    META_EXPOSURE = 16,
+    META_WHITE_BALANCE = 32,
+    META_FRAME_COUNTER = 64,
+    META_STROBE = 128,
+    META_GPIO_PIN_STATE = 256,
+    META_ROI_POSITION = 512,
+    META_ALL = 1023
+} meta_flags;
+
 class PANGOLIN_EXPORT FirewireVideo : public VideoInterface
 {
 public:
@@ -128,6 +171,31 @@ public:
     //! Implement VideoInput::Stop()
     void Stop();
 
+//! Stop the video stream before using One-shot mode
+  void StopForOneShot();
+
+  //! Clear the DMA buffer
+  void FlushDMABuffer();
+
+  //! Grab one shot (iso-transmission must be off - call StopForOneShot first)
+  bool GrabOneShot(unsigned char* image);
+
+  //! Check to see if camera is one-shot capable
+  bool CheckOneShotCapable();
+
+  //! set the meta data flags to be included in image data
+  void SetMetaDataFlags(  int flags );
+
+  //! return the current meta data flags from camera
+  uint32_t GetMetaDataFlags();
+
+  //! read the meta data from an image according to meta flags
+  void ReadMetaData( unsigned char *image, MetaData *metaData );
+  float ReadShutter( unsigned char *image );
+
+  //! create lookup table to convert quantised shutter values to absolute values
+  void CreateShutterLookupTable();
+
     //! Implement VideoInput::SizeBytes()
     size_t SizeBytes() const;
 
@@ -170,6 +238,11 @@ public:
     
     //! set auto shutter value
     void SetAutoShutterTime();
+
+  void SetShutterTimeManual();
+
+  //! return the quantised gain
+  int GetGainQuant() const;
     
     //! return absolute gain value
     float GetGain() const;
@@ -194,6 +267,18 @@ public:
     
     //! return quantised shutter value
     void SetShutterTimeQuant(int shutter);
+
+  //! set the white balance
+  void SetWhiteBalance(unsigned int u_b_value, unsigned int v_r_value);
+
+  //! get the white balance
+  void GetWhiteBalance(unsigned int *Blue_U_val, unsigned int *Red_V_val);
+
+  //! set the white balance to single shot auto
+  void SetSingleAutoWhiteBalance();
+
+  //! return the quantised shutter time
+  int GetShutterTimeQuant() const;
     
     //! set the trigger to internal, i.e. determined by video mode
     void SetInternalTrigger();
@@ -249,6 +334,9 @@ protected:
     dc1394_t * d;
     dc1394camera_list_t * list;
     mutable dc1394error_t err;
+
+  uint32_t meta_data_flags;
+  float* shutter_lookup_table;
     
 };
 

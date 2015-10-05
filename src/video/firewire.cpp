@@ -125,7 +125,7 @@ void FirewireVideo::init_format7_camera(
     }
     
     cout << "Using camera with GUID " << camera->guid << endl;
-    
+
     if(reset_at_boot){
         dc1394_camera_reset(camera);
     }
@@ -144,19 +144,20 @@ void FirewireVideo::init_format7_camera(
     err=dc1394_video_set_iso_speed(camera, iso_speed);
     if( err != DC1394_SUCCESS )
         throw VideoException("Could not set iso speed");
-    
+
     // check that the required mode is actually supported
     dc1394format7mode_t format7_info;
-    
+    memset(&format7_info, 0, sizeof(format7_info));
+
     err = dc1394_format7_get_mode_info(camera, video_mode, &format7_info);
     if( err != DC1394_SUCCESS )
         throw VideoException("Could not get format7 mode info");
-    
+
     // safely set the video mode
     err=dc1394_video_set_mode(camera, video_mode);
     if( err != DC1394_SUCCESS )
         throw VideoException("Could not set format7 video mode");
-    
+
     // set position to 0,0 so that setting any size within min and max is a valid command
     err = dc1394_format7_set_image_position(camera, video_mode,0,0);
     if( err != DC1394_SUCCESS )
@@ -414,6 +415,54 @@ void FirewireVideo::Stop()
     }
 }
 
+void FirewireVideo::StopForOneShot()
+{
+    if( running )
+    {
+        // Stop transmission
+        err=dc1394_video_set_transmission(camera,DC1394_OFF);
+        if( err != DC1394_SUCCESS )
+            throw VideoException("Could not stop the camera");
+        running = false;
+    }
+    //Call to eliminate spurious frames
+    err = dc1394_video_set_one_shot(camera, DC1394_OFF);
+    if( err != DC1394_SUCCESS )
+        throw VideoException("Could not set one shot to OFF");
+    FlushDMABuffer();
+}
+
+bool FirewireVideo::CheckOneShotCapable() {
+    if (camera->one_shot_capable >0 ) return true;
+    else return false;
+}
+
+bool FirewireVideo::GrabOneShot(unsigned char* image) {
+    dc1394_video_set_one_shot(camera, DC1394_ON);
+
+    dc1394video_frame_t *frame;
+    dc1394_capture_dequeue(camera, DC1394_CAPTURE_POLICY_WAIT, &frame);   
+    if( frame )
+    {
+        memcpy(image,frame->image,frame->image_bytes);
+        dc1394_capture_enqueue(camera,frame);
+        return true;
+    }
+    return false;
+}
+
+void FirewireVideo::FlushDMABuffer()
+{
+    dc1394video_frame_t *frame;
+    dc1394error_t err;
+
+    while( 1 ) {
+        err=dc1394_capture_dequeue(camera, DC1394_CAPTURE_POLICY_POLL, &frame);
+        if (err == NULL) break;
+        dc1394_capture_enqueue(camera, frame);
+    }
+}
+
 FirewireVideo::FirewireVideo(
         Guid guid,
         dc1394video_mode_t video_mode,
@@ -425,7 +474,7 @@ FirewireVideo::FirewireVideo(
     d = dc1394_new ();
     if (!d)
         throw VideoException("Failed to get 1394 bus");
-    
+    shutter_lookup_table = 0;
     init_camera(guid.guid,dma_buffers,iso_speed,video_mode,framerate);
 }
 
@@ -442,7 +491,7 @@ FirewireVideo::FirewireVideo(
     d = dc1394_new ();
     if (!d)
         throw VideoException("Failed to get 1394 bus");
-    
+    shutter_lookup_table = 0;
     init_format7_camera(guid.guid,dma_buffers,iso_speed,video_mode,framerate,width,height,left,top, reset_at_boot);
 }
 
@@ -471,7 +520,7 @@ FirewireVideo::FirewireVideo(
     const uint64_t guid = list->ids[deviceid].guid;
     
     dc1394_camera_free_list (list);
-    
+    shutter_lookup_table = 0;
     init_camera(guid,dma_buffers,iso_speed,video_mode,framerate);
     
 }
@@ -503,7 +552,7 @@ FirewireVideo::FirewireVideo(
     const uint64_t guid = list->ids[deviceid].guid;
     
     dc1394_camera_free_list (list);
-    
+    shutter_lookup_table = 0;
     init_format7_camera(guid,dma_buffers,iso_speed,video_mode,framerate,width,height,left,top, reset_at_boot);
     
 }
@@ -608,6 +657,29 @@ void FirewireVideo::PutFrame(FirewireFrame& f)
     }
 }
 
+void FirewireVideo::SetShutterTimeManual()
+{
+    dc1394error_t err = dc1394_feature_set_mode(camera, DC1394_FEATURE_SHUTTER, DC1394_FEATURE_MODE_MANUAL);
+    if (err < 0) {
+            throw VideoException("Could not set manual shutter mode");
+
+    }
+}
+
+void FirewireVideo::SetShutterTimeQuant(int shutter)
+{
+    dc1394error_t err = dc1394_feature_set_mode(camera, DC1394_FEATURE_SHUTTER, DC1394_FEATURE_MODE_MANUAL);
+    if (err < 0) {
+            throw VideoException("Could not set manual shutter mode");
+
+    }
+
+    err = dc1394_feature_set_value(camera,DC1394_FEATURE_SHUTTER,shutter);
+
+    if( err != DC1394_SUCCESS )
+        throw VideoException("Failed to set shutter");
+}
+
 float FirewireVideo::GetGain() const
 {
     float gain;
@@ -619,6 +691,16 @@ float FirewireVideo::GetGain() const
     
 }
 
+int FirewireVideo::GetGainQuant() const
+{
+    uint32_t shutter;
+    err = dc1394_feature_get_value(camera,DC1394_FEATURE_GAIN,&shutter);
+    if( err != DC1394_SUCCESS )
+        throw VideoException("Failed to read shutter");
+
+    return shutter;
+}
+
 void FirewireVideo::SetAutoGain()
 {
     
@@ -626,6 +708,26 @@ void FirewireVideo::SetAutoGain()
     if (err < 0) {
         throw VideoException("Could not set auto gain mode");
     }
+}
+
+float FirewireVideo::GetShutterTime() const
+{
+    float shutter;
+    err = dc1394_feature_get_absolute_value(camera,DC1394_FEATURE_SHUTTER,&shutter);
+    if( err != DC1394_SUCCESS )
+        throw VideoException("Failed to read shutter");
+
+    return shutter;
+}
+
+int FirewireVideo::GetShutterTimeQuant() const
+{
+    uint32_t shutter;
+    err = dc1394_feature_get_value(camera,DC1394_FEATURE_SHUTTER,&shutter);
+    if( err != DC1394_SUCCESS )
+        throw VideoException("Failed to read shutter");
+
+    return shutter;
 }
 
 void FirewireVideo::SetGain(float val)
@@ -684,16 +786,6 @@ void FirewireVideo::SetBrightness(float val)
     }
 }
 
-float FirewireVideo::GetShutterTime() const
-{
-    float shutter;
-    err = dc1394_feature_get_absolute_value(camera,DC1394_FEATURE_SHUTTER,&shutter);
-    if( err != DC1394_SUCCESS )
-        throw VideoException("Failed to read shutter");
-    
-    return shutter;
-}
-
 void FirewireVideo::SetAutoShutterTime()
 {
     dc1394error_t err = dc1394_feature_set_mode(camera, DC1394_FEATURE_SHUTTER, DC1394_FEATURE_MODE_AUTO);
@@ -720,14 +812,34 @@ void FirewireVideo::SetShutterTime(float val)
     }
 }
 
-void FirewireVideo::SetShutterTimeQuant(int shutter)
-{
-    // TODO: Set mode as well
-    
-    err = dc1394_feature_set_value(camera,DC1394_FEATURE_SHUTTER,shutter);
-    
+
+void FirewireVideo::SetSingleAutoWhiteBalance(){
+
+    dc1394error_t err = dc1394_feature_set_mode(camera, DC1394_FEATURE_WHITE_BALANCE, DC1394_FEATURE_MODE_ONE_PUSH_AUTO);
+    if (err < 0) {
+        throw VideoException("Could not set manual white balance mode");
+    }
+}
+
+void FirewireVideo::SetWhiteBalance(unsigned int Blue_U_val, unsigned int Red_V_val){
+
+    dc1394error_t err = dc1394_feature_set_mode(camera, DC1394_FEATURE_WHITE_BALANCE, DC1394_FEATURE_MODE_MANUAL);
+    if (err < 0) {
+        throw VideoException("Could not set manual white balance mode");
+    }
+
+    err = dc1394_feature_whitebalance_set_value(camera, Blue_U_val, Red_V_val);
+    if (err < 0) {
+        throw VideoException("Could not set white balance value");
+    }
+
+}
+
+void FirewireVideo::GetWhiteBalance(unsigned int *Blue_U_val, unsigned int *Red_V_val) {
+
+    dc1394error_t err = dc1394_feature_whitebalance_get_value(camera,Blue_U_val, Red_V_val );
     if( err != DC1394_SUCCESS )
-        throw VideoException("Failed to set shutter");
+        throw VideoException("Failed to read white balance");
 }
 
 float FirewireVideo::GetGamma() const
@@ -770,11 +882,114 @@ void FirewireVideo::SetExternalTrigger(dc1394trigger_mode_t mode, dc1394trigger_
     }
 }
 
+void FirewireVideo::SetMetaDataFlags(  int flags ) {
+    meta_data_flags = 0x80000000 | flags;
+
+    dc1394error_t err = dc1394_set_control_register(camera, 0x12f8, meta_data_flags);
+    if (err < 0) {
+        throw VideoException("Could not set meta data flags");
+    }
+}
+
+uint32_t FirewireVideo::GetMetaDataFlags() {
+    uint32_t value;
+    dc1394error_t err = dc1394_get_control_register(camera, 0x12f8, &value);
+    if (err < 0) {
+        throw VideoException("Could not get meta data flags");
+    }
+    return value;
+}
+
+void FirewireVideo::ReadMetaData( unsigned char *image, MetaData *metaData ) {
+    uint8_t* data = (uint8_t*)image;
+
+    int offset = 0;
+
+    metaData->flags = meta_data_flags;
+
+    if(meta_data_flags & META_TIMESTAMP) {
+        metaData->timestamp = (data+4*offset)[3] + ((data+4*offset)[2] << 8) + ((data+4*offset)[1] << 16) + ((data+4*offset)[0] << 24);
+        offset++;
+    }
+    if(meta_data_flags & META_GAIN) {
+        metaData->gain = (data+4*offset)[3] + (((data+4*offset)[2]&0xf) << 8);
+        offset++;
+    }
+    if(meta_data_flags & META_SHUTTER) {
+        metaData->shutterQuant = (data+4*offset)[3] + (((data+4*offset)[2]) << 8) + ((data+4*offset)[1] << 16);
+        offset++;
+        //Convert quantized value to absolute value from lookup table
+        if(shutter_lookup_table) metaData->shutterAbs = shutter_lookup_table[metaData->shutterQuant];
+    }
+    if(meta_data_flags & META_BRIGHTNESS) {
+        metaData->brightness = (data+4*offset)[3] + (((data+4*offset)[2]&0xf) << 8);
+        offset++;
+    }
+    if(meta_data_flags & META_EXPOSURE) {
+        metaData->auto_exposure = (data+4*offset)[3] + (((data+4*offset)[2]&0xf) << 8);
+        offset++;
+    }
+    if(meta_data_flags & META_WHITE_BALANCE) {
+        metaData->whitebalance_v_r = (data+4*offset)[3] + (((data+4*offset)[2]&0xF ) << 8);
+        metaData->whitebalance_u_b = (data+4*offset)[1] + (((data+4*offset)[2]&0xF0) << 8);
+        //TODO: Add other white balance
+        offset++;
+    }
+    if(meta_data_flags & META_FRAME_COUNTER) {
+        metaData->frame_count = (data+4*offset)[3] + ((data+4*offset)[2] << 8) + ((data+4*offset)[1] << 16) + ((data+4*offset)[0] << 24);
+        offset++;
+    }
+    if(meta_data_flags & META_STROBE) {
+        //TODO: add strobe functionality
+        offset++;
+    }
+    if(meta_data_flags & META_GPIO_PIN_STATE) {
+        //TODO: Add GPIO functionality
+        offset++;
+    }
+    if(meta_data_flags & META_ROI_POSITION) {
+        //TODO: Add ROI functionality
+        offset++;
+    }
+
+}
+
+float FirewireVideo::ReadShutter( unsigned char *image ) {
+    uint8_t* data = (uint8_t*)image;
+
+    int offset = 0;
+    float ret=0;
+
+    if(meta_data_flags & META_TIMESTAMP) {
+        offset++;
+    }
+    if(meta_data_flags & META_GAIN) {
+        offset++;
+    }
+    if(meta_data_flags & META_SHUTTER) {
+        int shutterQuant = (data+4*offset)[3] + (((data+4*offset)[2]) << 8) + ((data+4*offset)[1] << 16);
+        //Convert quantized value to absolute value from lookup table
+        if(shutter_lookup_table) ret = shutter_lookup_table[shutterQuant];
+
+    }
+    return ret;
+}
+
+void FirewireVideo::CreateShutterLookupTable() {
+    shutter_lookup_table = new float[4096];
+    for (int i=0; i<4096; i++) {
+        SetShutterTimeQuant(i);
+        shutter_lookup_table[i] = GetShutterTime();
+        cout << shutter_lookup_table[i] << endl;
+    }
+}
 
 FirewireVideo::~FirewireVideo()
 {
     Stop();
-    
+
+    if(shutter_lookup_table) delete shutter_lookup_table;
+
     // Close camera
     dc1394_video_set_transmission(camera, DC1394_OFF);
     dc1394_capture_stop(camera);
@@ -821,8 +1036,8 @@ int FirewireVideo::nearest_value(int value, int step, int min, int max)
 {
     int low, high;
     
-    low=value-(value%step);
-    high=value-(value%step)+step;
+    low= (step!=0) ? value-(value%step) : value;
+    high= (step!=0) ? value-(value%step)+step : value;
     if (low<min)
         low=min;
     if (high>max)
